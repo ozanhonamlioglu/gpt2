@@ -13,6 +13,7 @@ n_vocab = tokenizer.vocab_size #n
 
 # model hyperparameters
 embed_dim = 2**8 # 256
+num_heads = 8 # 256 / 8 = 32
 n_layers = 12 # number of transformer blocks
 mlp_scalar = 4 # times
 
@@ -33,14 +34,38 @@ class OneAttentionHead(nn.Module):
   def __init__(self):
     super().__init__()
     self.qkv_layer = nn.Linear(embed_dim, embed_dim * 3, bias=False)
+    self.w0 = nn.Linear(embed_dim, embed_dim, bias=False)
 
   def forward(self, x):  
     qkv = self.qkv_layer(x)
     q,k,v = torch.chunk(qkv, 3, dim=-1)
-    return F.scaled_dot_product_attention(q,k,v,is_causal=True)
+    out = F.scaled_dot_product_attention(q,k,v,is_causal=True)
+    return self.w0(out)
+
+class MultiHeadAttention(nn.Module):
+  def __init__(self):
+    super().__init__()
+    self.qkv_layer = nn.Linear(embed_dim, embed_dim * 3, bias=False)
+    self.w0 = nn.Linear(embed_dim, embed_dim, bias=False)
+    
+  def forward(self, x):
+    B, T, C = x.shape                       # (batch, seq, embed_dim)
+    qkv = self.qkv_layer(x)                 # (B, T, 3C)
+    q, k, v = torch.chunk(qkv, 3, dim=-1)   # each (B, T, C)
+    head_dim = C // num_heads               # 256 / 8 = 32
+
+    # (B, T, C) -> (B, T, num_heads, head_dim) -> (B, num_heads, T, head_dim)
+    q = q.view(B, T, num_heads, head_dim).transpose(1, 2)
+    k = k.view(B, T, num_heads, head_dim).transpose(1, 2)
+    v = v.view(B, T, num_heads, head_dim).transpose(1, 2)
+    out = F.scaled_dot_product_attention(q, k, v, is_causal=True)  # (B, heads, T, head_dim)
+    
+    # merge heads back: (B, heads, T, head_dim) -> (B, T, C)
+    out = out.transpose(1, 2).contiguous().view(B, T, C)
+    return self.w0(out)
 
 class TransformerBlock(nn.Module):
-  def __init__(self):
+  def __init__(self, single_head_attn = False):
     super().__init__()
 
     # layer normalization
@@ -48,7 +73,7 @@ class TransformerBlock(nn.Module):
     self.layernormB = nn.LayerNorm(embed_dim) # before MLP
     
     # attention header
-    self.attn = OneAttentionHead()
+    self.attn = OneAttentionHead() if single_head_attn else MultiHeadAttention()
     
     # MLP (feed-forward): expand 4x, nonlinearity, contract back
     self.mlp = MLP()
