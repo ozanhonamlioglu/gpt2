@@ -27,21 +27,27 @@ class TokenDataset(Dataset):
     return self.inputs[idx], self.targets[idx]
 
 
-token_dataset= TokenDataset(storyTokens.to(device), model.seq_len)
+token_dataset= TokenDataset(storyTokens, model.seq_len)
 loader = DataLoader(token_dataset, batch_size=model.batch_size, shuffle=True)
 
-X, y = next(iter(loader))
 gpt2 = model.GPT2().to(device)
 
-epoch = 3
+total_params = sum(p.numel() for p in gpt2.parameters())
+print(f"Total parameters: {total_params:,} ({total_params / 1e6:.2f}M)")
+print(f"Model size: {total_params * 4 / (1024**2):.2f} MB")
+
+epoch = 2
 
 lossfun = torch.nn.CrossEntropyLoss()
 optimizer = torch.optim.AdamW(gpt2.parameters(), lr=3e-4, weight_decay=0.01)
 
 for ep in range(epoch):
   for step, (X, y) in enumerate(loader):
-    pred = gpt2(X)
-    loss = lossfun(pred.view(-1, model.n_vocab), y.view(-1))
+    X, y = X.to(device), y.to(device)
+    
+    with torch.autocast(device_type=device, dtype=torch.bfloat16):
+      pred = gpt2(X)
+      loss = lossfun(pred.view(-1, model.n_vocab), y.view(-1))
 
     optimizer.zero_grad()
     loss.backward()

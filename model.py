@@ -4,11 +4,11 @@ from torch.nn import functional as F
 
 # hyperparameters for GPT2-124M
 n_vocab    = 50257 # GPT2 vocab size
-embed_dim  =   768 # embedding dimension
-seq_len    =  1024 # max sequence length
-n_heads    =    12 # attention heads
-n_blocks   =    12 # transformer blocks
-batch_size =     8
+embed_dim  =   256 # embedding dimension
+seq_len    =   256 # max sequence length
+n_heads    =   8 # attention heads
+n_blocks   =   8 # transformer blocks
+batch_size =   8
 
 class MLP(nn.Module):
   def __init__(self):
