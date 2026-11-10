@@ -1,31 +1,21 @@
-# pytorch stuff
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-#n load GPT2 tokenizer
-from transformers import AutoTokenizer
-tokenizer = AutoTokenizer.from_pretrained('gpt2')
-
-# data hyperparameters
-seq_len = 8 # aka context window
-n_vocab = tokenizer.vocab_size #n
-
-# model hyperparameters
-embed_dim = 2**8 # 256
-num_heads = 8 # 256 / 8 = 32
-n_layers = 12 # number of transformer blocks
-mlp_scalar = 4 # times
-
-# training hyperparameters
-batch_size = 5
+# hyperparameters for GPT2-124M
+n_vocab    = 50257 # GPT2 vocab size
+embed_dim  =   768 # embedding dimension
+seq_len    =  1024 # max sequence length
+n_heads    =    12 # attention heads
+n_blocks   =    12 # transformer blocks
+batch_size =     8
 
 class MLP(nn.Module):
   def __init__(self):
     super().__init__()
     
-    self.mlp_expand = nn.Linear(embed_dim, embed_dim * mlp_scalar)
-    self.mlp_contract = nn.Linear(embed_dim * mlp_scalar, embed_dim)
+    self.mlp_expand = nn.Linear(embed_dim, embed_dim * 4)
+    self.mlp_contract = nn.Linear(embed_dim * 4, embed_dim)
   
   def forward(self, x):
     return self.mlp_contract(F.gelu(self.mlp_expand(x)))
@@ -52,12 +42,12 @@ class MultiHeadAttention(nn.Module):
     B, T, C = x.shape                       # (batch, seq, embed_dim)
     qkv = self.qkv_layer(x)                 # (B, T, 3C)
     q, k, v = torch.chunk(qkv, 3, dim=-1)   # each (B, T, C)
-    head_dim = C // num_heads               # 256 / 8 = 32
+    head_dim = C // n_heads               # 256 / 8 = 32
 
     # (B, T, C) -> (B, T, num_heads, head_dim) -> (B, num_heads, T, head_dim)
-    q = q.view(B, T, num_heads, head_dim).transpose(1, 2)
-    k = k.view(B, T, num_heads, head_dim).transpose(1, 2)
-    v = v.view(B, T, num_heads, head_dim).transpose(1, 2)
+    q = q.view(B, T, n_heads, head_dim).transpose(1, 2)
+    k = k.view(B, T, n_heads, head_dim).transpose(1, 2)
+    v = v.view(B, T, n_heads, head_dim).transpose(1, 2)
     out = F.scaled_dot_product_attention(q, k, v, is_causal=True)  # (B, heads, T, head_dim)
     
     # merge heads back: (B, heads, T, head_dim) -> (B, T, C)
@@ -72,22 +62,19 @@ class TransformerBlock(nn.Module):
     self.layernormA = nn.LayerNorm(embed_dim) # before attention
     self.layernormB = nn.LayerNorm(embed_dim) # before MLP
     
-    # attention header
     self.attn = OneAttentionHead() if single_head_attn else MultiHeadAttention()
-    
-    # MLP (feed-forward): expand 4x, nonlinearity, contract back
     self.mlp = MLP()
 
   def forward(self, x):
     # --- attention sublayer ---
     x_norm = self.layernormA(x)
     attn_output = self.attn(x_norm)
-    x += attn_output
+    x = x + attn_output
     
     # --- MLP sublayer ---
     x_norm = self.layernormB(x)
     mlp_output = self.mlp(x_norm)
-    x += mlp_output # residual
+    x = x + mlp_output # residual
 
     return x
   
@@ -101,7 +88,7 @@ class GPT2(nn.Module):
     self.layernormC = nn.LayerNorm(embed_dim) # before final
     
     # transformer blocks, applied one after another
-    self.blocks = nn.Sequential(*[TransformerBlock() for _ in range(n_layers)])
+    self.blocks = nn.Sequential(*[TransformerBlock() for _ in range(n_blocks)])
     
     # final layer
     self.finalLinear = nn.Linear(embed_dim, n_vocab, bias=False)
@@ -111,7 +98,7 @@ class GPT2(nn.Module):
   
   def forward(self, tokx):
     token_embed = self.embedding(tokx)
-    posit_embed = self.positions(torch.arange(tokx.shape[-1]))
+    posit_embed = self.positions(torch.arange(tokx.shape[-1], device=tokx.device))
     
     x = token_embed + posit_embed
     
