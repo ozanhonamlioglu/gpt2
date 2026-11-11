@@ -1,11 +1,10 @@
 from model import GPT2
-from databuilder import storyTokens, tokenizer
+from databuilder import storyTokens
 import model
+import meta
 
 import torch
 from torch.utils.data import Dataset, DataLoader
-
-device = "cuda" if torch.cuda.is_available() else "mps"
 
 class TokenDataset(Dataset):
   def __init__(self, tokens, seq_len):
@@ -14,7 +13,7 @@ class TokenDataset(Dataset):
     self.inputs  = []
     self.targets = []
 
-    stride = model.seq_len
+    stride = meta.seq_len
     
     for i in range(0,len(tokens)-seq_len, stride):
       self.inputs.append( tokens[i   : i+seq_len])
@@ -27,10 +26,10 @@ class TokenDataset(Dataset):
     return self.inputs[idx], self.targets[idx]
 
 
-token_dataset= TokenDataset(storyTokens, model.seq_len)
-loader = DataLoader(token_dataset, batch_size=model.batch_size, shuffle=True)
+token_dataset= TokenDataset(storyTokens, meta.seq_len)
+loader = DataLoader(token_dataset, batch_size=meta.batch_size, shuffle=True)
 
-gpt2 = model.GPT2().to(device)
+gpt2 = model.GPT2().to(meta.device)
 
 total_params = sum(p.numel() for p in gpt2.parameters())
 print(f"Total parameters: {total_params:,} ({total_params / 1e6:.2f}M)")
@@ -43,11 +42,9 @@ optimizer = torch.optim.AdamW(gpt2.parameters(), lr=3e-4, weight_decay=0.01)
 
 for ep in range(epoch):
   for step, (X, y) in enumerate(loader):
-    X, y = X.to(device), y.to(device)
-    
-    with torch.autocast(device_type=device, dtype=torch.bfloat16):
-      pred = gpt2(X)
-      loss = lossfun(pred.view(-1, model.n_vocab), y.view(-1))
+    X, y = X.to(meta.device), y.to(meta.device)
+    pred = gpt2(X)
+    loss = lossfun(pred.view(-1, meta.n_vocab), y.view(-1))
 
     optimizer.zero_grad()
     loss.backward()
