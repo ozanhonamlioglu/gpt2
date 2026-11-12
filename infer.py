@@ -8,8 +8,12 @@ gpt2.load_state_dict(torch.load("gpt2_tinystories.pt", map_location=meta.device,
 gpt2.eval()
 
 @torch.no_grad()
-def generate(prompt, max_new_tokens=100, temperature=0.8, show_perplexity = False):
-  print(prompt, end="", flush=True) # print prompt first
+def generate(
+  prompt,
+  generate_hook=None, # hook for printing while generating
+  max_new_tokens=100, 
+  temperature=0.8, 
+  ):
   tokens = meta.tokenizer.encode(prompt, return_tensors="pt").to(meta.device)
   
   nlls = [] # store negative log-likelihood of each generated token
@@ -29,14 +33,18 @@ def generate(prompt, max_new_tokens=100, temperature=0.8, show_perplexity = Fals
     if next_token.item() == meta.tokenizer.eos_token_id:
       break
 
-    word = meta.tokenizer.decode(next_token[0])
-    print(word, end="", flush=True)
+    if generate_hook is not None:
+      generate_hook(meta.tokenizer.decode(next_token[0]))
     
     tokens = torch.cat((tokens, next_token), dim=1)
-    
-  print()
-  if show_perplexity:
-    ppl = torch.exp(torch.stack(nlls).mean()).item()
-    print(f"[Perplexity: {ppl:.2f}]")
+  
+  ppl = torch.exp(torch.stack(nlls).mean()).item()
+  return tokens, ppl
 
-generate("Once upon a time there was a little", show_perplexity = True)
+
+prompt = "Once upon a time there was a little"
+gen, ppl = generate(prompt)
+
+print(meta.tokenizer.decode(gen[0]))
+print()
+print(f"\n[Perplexity: {ppl:.2f}]")
