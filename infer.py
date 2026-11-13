@@ -11,8 +11,8 @@ gpt2.eval()
 def generate(
   prompt,
   generate_hook=None, # hook for printing while generating
-  max_new_tokens=100, 
-  temperature=0.8, 
+  max_new_tokens=100,
+  temperature=0.8,
   ):
   tokens = meta.tokenizer.encode(prompt, return_tensors="pt").to(meta.device)
   
@@ -43,7 +43,7 @@ def generate(
 
 
 prompt = "Once upon a time there was a little"
-gen, ppl = generate(prompt)
+gen, ppl = generate(prompt, max_new_tokens=300)
 
 print(meta.tokenizer.decode(gen[0]))
 print()

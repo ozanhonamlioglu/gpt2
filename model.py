@@ -9,27 +9,17 @@ class MLP(nn.Module):
     
     self.mlp_expand = nn.Linear(meta.embed_dim, meta.embed_dim * 4)
     self.mlp_contract = nn.Linear(meta.embed_dim * 4, meta.embed_dim)
+    self.dropout = nn.Dropout(meta.dropout)
   
   def forward(self, x):
-    return self.mlp_contract(F.gelu(self.mlp_expand(x)))
-
-class OneAttentionHead(nn.Module):
-  def __init__(self):
-    super().__init__()
-    self.qkv_layer = nn.Linear(meta.embed_dim, meta.embed_dim * 3, bias=False)
-    self.w0 = nn.Linear(meta.embed_dim, meta.embed_dim, bias=False)
-
-  def forward(self, x):  
-    qkv = self.qkv_layer(x)
-    q,k,v = torch.chunk(qkv, 3, dim=-1)
-    out = F.scaled_dot_product_attention(q,k,v,is_causal=True)
-    return self.w0(out)
+    return self.dropout(self.mlp_contract(F.gelu(self.mlp_expand(x))))
 
 class MultiHeadAttention(nn.Module):
   def __init__(self):
     super().__init__()
     self.qkv_layer = nn.Linear(meta.embed_dim, meta.embed_dim * 3, bias=False)
     self.w0 = nn.Linear(meta.embed_dim, meta.embed_dim, bias=False)
+    self.dropout = nn.Dropout(meta.dropout)
     
   def forward(self, x):
     B, T, C = x.shape                       # (batch, seq, embed_dim)
@@ -41,21 +31,21 @@ class MultiHeadAttention(nn.Module):
     q = q.view(B, T, meta.n_heads, head_dim).transpose(1, 2)
     k = k.view(B, T, meta.n_heads, head_dim).transpose(1, 2)
     v = v.view(B, T, meta.n_heads, head_dim).transpose(1, 2)
-    out = F.scaled_dot_product_attention(q, k, v, is_causal=True)  # (B, heads, T, head_dim)
+    out = F.scaled_dot_product_attention(q, k, v, dropout_p=meta.dropout if self.training else 0.0, is_causal=True)  # (B, heads, T, head_dim)
     
     # merge heads back: (B, heads, T, head_dim) -> (B, T, C)
     out = out.transpose(1, 2).contiguous().view(B, T, C)
-    return self.w0(out)
+    return self.dropout(self.w0(out))
 
 class TransformerBlock(nn.Module):
-  def __init__(self, single_head_attn = False):
+  def __init__(self):
     super().__init__()
 
     # layer normalization
     self.layernormA = nn.LayerNorm(meta.embed_dim) # before attention
     self.layernormB = nn.LayerNorm(meta.embed_dim) # before MLP
     
-    self.attn = OneAttentionHead() if single_head_attn else MultiHeadAttention()
+    self.attn = MultiHeadAttention()
     self.mlp = MLP()
 
   def forward(self, x):
@@ -77,6 +67,7 @@ class GPT2(nn.Module):
     
     self.embedding = nn.Embedding(meta.n_vocab, meta.embed_dim)
     self.positions = nn.Embedding(meta.seq_len, meta.embed_dim)
+    self.dropout = nn.Dropout(meta.dropout)
     
     self.layernormC = nn.LayerNorm(meta.embed_dim) # before final
     
@@ -93,7 +84,7 @@ class GPT2(nn.Module):
     token_embed = self.embedding(tokx)
     posit_embed = self.positions(torch.arange(tokx.shape[-1], device=tokx.device))
     
-    x = token_embed + posit_embed
+    x = self.dropout(token_embed + posit_embed)
     
     x = self.blocks(x)
     
