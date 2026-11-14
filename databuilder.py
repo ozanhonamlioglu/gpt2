@@ -7,7 +7,7 @@ import meta
 if os.path.exists("tinystories.pt"):
     storyTokens = torch.load("tinystories.pt", weights_only=True)
 else:
-    dataset = load_dataset("roneneldan/TinyStories", split="train[:100000]")
+    dataset = load_dataset("roneneldan/TinyStories", split="train[:200000]")
     all_tokens = []
     for item in tqdm(dataset, desc="Tokenizing TinyStories"):
         all_tokens.extend(meta.tokenizer.encode(item["text"]))

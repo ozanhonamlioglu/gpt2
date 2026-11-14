@@ -43,8 +43,9 @@ optimizer = torch.optim.AdamW(gpt2.parameters(), lr=3e-4, weight_decay=0.01)
 for ep in range(epoch):
   for step, (X, y) in enumerate(loader):
     X, y = X.to(meta.device), y.to(meta.device)
-    pred = gpt2(X)
-    loss = lossfun(pred.view(-1, meta.n_vocab), y.view(-1))
+    with torch.autocast(device_type=meta.device, dtype=torch.bfloat16):
+      pred = gpt2(X)
+      loss = lossfun(pred.view(-1, meta.n_vocab), y.view(-1))
 
     optimizer.zero_grad()
     loss.backward()
