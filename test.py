@@ -7,8 +7,9 @@ gpt2 = model.GPT2().to(meta.device)
 gpt2.load_state_dict(torch.load("gpt2_qa.pt", map_location=meta.device, weights_only=True))
 gpt2.eval()
 
-prompt = "Who are you?"
-gen, ppl = gpt2.generate(prompt, max_new_tokens=300)
+question = "Count from 1 to 10"
+prompt = f"Question: {question}\nAnswer:"
+gen, ppl = gpt2.generate(prompt)
 
 print(meta.tokenizer.decode(gen[0]))
 print()

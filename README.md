@@ -1,34 +1,6 @@
 # GPT-2 From Scratch in PyTorch
 
-A lightweight, modular implementation of the **GPT-2** transformer architecture built from scratch in PyTorch—covering dataset tokenization, pre-training, and real-time streaming inference.
-
-## Features
-
-- **Custom GPT-2 Architecture (`model.py`)**
-  - Causal **Multi-Head Self-Attention** (plus an optional single-head attention module) powered by PyTorch's `scaled_dot_product_attention`.
-  - Pre-LayerNorm **Transformer Blocks** with residual connections and GELU feed-forward (`MLP`) networks.
-  - Learned token & positional embeddings with **weight tying** between the token embedding layer and final language modeling head.
-- **Centralized Configuration (`meta.py`)**
-  - Single source of truth for model dimensions (`embed_dim`, `seq_len`, `n_heads`, `n_blocks`, `batch_size`), tokenizer setup, and automatic hardware acceleration (`cuda` / `mps`).
-- **Automated Data Pipeline (`databuilder.py`)**
-  - Streams/loads text corpora via Hugging Face `datasets` (`TinyStories` by default).
-  - Appends `<|endoftext|>` boundary tokens between documents and caches the packed 1D token tensor locally (`.pt`) for instant startup on subsequent runs.
-- **End-to-End Training (`train.py`)**
-  - Non-overlapping context window chunking via a custom PyTorch `Dataset` & `DataLoader`.
-  - Next-token prediction training loop using `CrossEntropyLoss` and `AdamW`, exporting trained weights as a portable `.pt` checkpoint.
-- **Streaming Autoregressive Inference (`infer.py`)**
-  - Loads trained checkpoints across devices (`CUDA` or Apple Silicon `MPS`) and streams generated tokens live to the terminal with configurable temperature sampling and automatic `<|endoftext|>` stopping.
-
-## Project Structure
-
-```text
-├── meta.py          # Hyperparameters, tokenizer, and device configuration
-├── model.py         # GPT-2 architecture (Attention, MLP, TransformerBlock, GPT2)
-├── databuilder.py   # Dataset downloading, tokenization, and local .pt caching
-├── train.py         # Dataset chunking, DataLoader, and training loop
-├── infer.py         # Live token-by-token text generation
-└── install.txt      # Core Python dependencies
-```
+A modular, end-to-end implementation of the **GPT-2** transformer architecture built from scratch in PyTorch—featuring a complete two-stage LLM training pipeline: **Stage 1 Pre-Training** (learning language & grammar) and **Stage 2 Post-Training / Supervised Fine-Tuning** (learning Question-Answering).
 
 ## Quick Start
 
@@ -37,26 +9,53 @@ A lightweight, modular implementation of the **GPT-2** transformer architecture 
 pip install -r install.txt
 ```
 
-### 2. Configure Hyperparameters
-Adjust model scale and batch size in `meta.py` to match your hardware (e.g., compact preset for local Apple Silicon `mps` or scaled-up preset for cloud GPUs).
+### 2. Configure Hyperparameters (`meta.py`)
+Adjust model dimensions (`embed_dim`, `seq_len`, `n_heads`, `n_blocks`, `batch_size`) in `meta.py` to match your hardware (e.g., compact preset for local Apple Silicon `mps` or full 124M preset for cloud GPUs).
 
-### 3. Train the Model
+### 3. Stage 1: Pre-Training (Base Model)
+Train the base GPT-2 model from scratch on raw narrative text (`TinyStories`) so it learns English grammar, vocabulary, and next-token prediction:
 ```bash
-python train.py
+python pretraining.py
 ```
-On the first run, `databuilder.py` automatically downloads and tokenizes the dataset into `tinystories.pt`, then trains the model and saves the weights to `gpt2_tinystories.pt`.
+- Tokenizes and caches the corpus into `tinystories.pt` with `<|endoftext|>` document boundaries.
+- Trains from random weights (`lr = 3e-4`) and exports the base model checkpoint to **`gpt2_tinystories.pt`**.
 
-### 4. Generate Text
+### 4. Stage 2: Post-Training / Supervised Fine-Tuning (Q&A Model)
+Transform the pre-trained base model into a Question-Answering assistant using instruction data (`Alpaca`):
 ```bash
-python infer.py
+python supertuning.py
 ```
-Loads `gpt2_tinystories.pt` and streams generated completions directly to the terminal.
+- Formats Q&A pairs (`Question: ...\nAnswer: ...<|endoftext|>`) and caches them into `alpaca.pt`.
+- Applies **`-100` target loss masking** to the question and padding tokens so gradients exclusively train the model on generating answers.
+- Loads **`gpt2_tinystories.pt`**, fine-tunes with a gentle learning rate (`lr = 5e-5`), and exports the post-trained checkpoint to **`gpt2_qa.pt`**.
 
-## Roadmap & Upcoming Features
+### 5. Run Inference (`test.py`)
+Generate answers and evaluate model confidence (perplexity):
+```bash
+python test.py
+```
 
-- **Post-Training / Supervised Fine-Tuning (SFT)**
-  - Second-stage training pipeline on instruction and Question-Answering datasets (e.g., **Alpaca**).
-  - Structured prompt templates (`Question: ... Answer: ...<|endoftext|>`) and target loss masking so the model learns to directly answer user questions rather than simply continuing stories.
-- **Interactive Q&A Mode**
-  - Conversational CLI loop in `infer.py` formatted for direct question-and-answer interactions.
+---
 
+## Project Structure
+
+```text
+├── meta.py          # Hyperparameters, tokenizer, and device configuration
+├── model.py         # GPT-2 architecture & built-in generate() method
+├── databuilder.py   # Stage 1 (TinyStories) & Stage 2 (Alpaca Q&A) data builders
+├── train.py         # Shared bfloat16 mixed-precision training engine
+├── pretraining.py   # Stage 1: Base language model pre-training
+├── supertuning.py   # Stage 2: Post-training / Supervised Fine-Tuning (SFT)
+├── test.py          # Q&A inference and perplexity evaluation
+└── install.txt      # Core Python dependencies
+```
+
+## Core Highlights
+
+- **Two-Stage LLM Pipeline (`pretraining.py` $\rightarrow$ `supertuning.py`)**
+  - Mirrors modern production LLM workflows by separating **Pre-Training** (continuous document packing on `TinyStories`) from **Post-Training / SFT** (prompt-masked instruction tuning on `Alpaca`).
+- **Custom GPT-2 Architecture (`model.py`)**
+  - Causal **Multi-Head Self-Attention** (`scaled_dot_product_attention`), Pre-LayerNorm **Transformer Blocks**, GELU `MLP` layers, dropout regularization, and **weight tying** between token embeddings and the output projection head.
+  - Built-in `@torch.no_grad()` autoregressive `generate()` method with temperature control, live streaming hooks, and automatic **perplexity** scoring.
+- **Fast Mixed-Precision Training (`train.py` & `databuilder.py`)**
+  - Uses `bfloat16` mixed precision (`torch.autocast`) with `AdamW` and `CrossEntropyLoss`, paired with automatic local `.pt` dataset caching for instant startup on repeated runs.
