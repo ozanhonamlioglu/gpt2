@@ -1,5 +1,4 @@
 import torch
-import torch.nn.functional as F
 import meta
 import model
 
@@ -7,10 +6,27 @@ gpt2 = model.GPT2().to(meta.device)
 gpt2.load_state_dict(torch.load("gpt2_qa.pt", map_location=meta.device, weights_only=True))
 gpt2.eval()
 
-question = "Count from 1 to 10"
-prompt = f"Question: {question}\nAnswer:"
-gen, ppl = gpt2.generate(prompt)
+print("Ask a question (type 'exit' or press Ctrl+C to quit).\n")
 
-print(meta.tokenizer.decode(gen[0]))
-print()
-print(f"\n[Perplexity: {ppl:.2f}]")
+while True:
+  try:
+    question = input("You: ").strip()
+  except (EOFError, KeyboardInterrupt):
+    print("\nBye!")
+    break
+
+  if not question:
+    continue
+  if question.lower() in ("exit", "quit"):
+    print("Bye!")
+    break
+
+  prompt = f"Question: {question}\nAnswer:"
+  print("GPT2:", end="", flush=True)
+  try:
+    _, ppl = gpt2.generate(prompt, generate_hook=lambda t: print(t, end="", flush=True))
+  except KeyboardInterrupt:
+    print("\n[interrupted]\n")
+    continue
+
+  print(f"\n[Perplexity: {ppl:.2f}]\n")
