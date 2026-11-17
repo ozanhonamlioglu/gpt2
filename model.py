@@ -79,6 +79,19 @@ class GPT2(nn.Module):
     
     # tied output
     self.finalLinear.weight = self.embedding.weight
+
+    # GPT-2 style init (std 0.02); PyTorch's default N(0,1) embedding makes tied logits huge at start
+    self.apply(self._init_weights)
+    for name, p in self.named_parameters():
+      if name.endswith("mlp_contract.weight") or name.endswith("w0.weight"):
+        # scale residual projections down so the residual stream doesn't grow with depth
+        torch.nn.init.normal_(p, mean=0.0, std=0.02 / (2 * meta.n_blocks) ** 0.5)
+
+  def _init_weights(self, module):
+    if isinstance(module, (nn.Linear, nn.Embedding)):
+      torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+    if isinstance(module, nn.Linear) and module.bias is not None:
+      torch.nn.init.zeros_(module.bias)
   
   def forward(self, tokx):
     token_embed = self.embedding(tokx)
@@ -94,16 +107,48 @@ class GPT2(nn.Module):
       prompt,
       generate_hook=None, # hook for printing while generating
       max_new_tokens=100,
-      temperature=0.7
+      temperature=0.7,
+      top_k=40,   # only sample from the 40 most likely tokens
+      top_p=0.9,  # ...and only from the smallest set covering 90% of the probability
+      repetition_penalty=1.2, # make tokens already used in the answer less likely (1.0 = off)
+      no_repeat_ngram_size=3  # never repeat the same 3-token phrase in the answer (0 = off, min 2)
     ):
     tokens = meta.tokenizer.encode(prompt, return_tensors="pt").to(meta.device)
-    
+    prompt_len = tokens.shape[1]
+
     nlls = [] # store negative log-likelihood of each generated token
-    
+
     for _ in range(max_new_tokens):
       idx_cond = tokens[:, -meta.seq_len:]
       logits = self(idx_cond)
-      last_logits = logits[:, -1, :] / temperature
+      last_logits = logits[:, -1, :].clone()
+
+      # only look at the answer, so the model can still reuse words from the question
+      answer = tokens[0, prompt_len:].tolist()
+
+      # repetition penalty (CTRL-style): shrink the logit of every token already in the answer
+      if repetition_penalty != 1.0 and answer:
+        used = torch.tensor(sorted(set(answer)), device=tokens.device)
+        scores = last_logits[0, used]
+        last_logits[0, used] = torch.where(scores > 0, scores / repetition_penalty, scores * repetition_penalty)
+
+      # no-repeat n-gram: if the last n-1 tokens appeared before, ban the token that followed them
+      n = no_repeat_ngram_size
+      if n > 1 and len(answer) >= n:
+        prefix = answer[-(n - 1):]
+        banned = {answer[i + n - 1] for i in range(len(answer) - n + 1) if answer[i : i + n - 1] == prefix}
+        last_logits[0, list(banned)] = float("-inf")
+
+      last_logits = last_logits / temperature
+      if top_k is not None:
+        kth = torch.topk(last_logits, top_k, dim=-1).values[:, -1, None]
+        last_logits = last_logits.masked_fill(last_logits < kth, float("-inf"))
+      if top_p is not None:
+        sorted_logits, sorted_idx = torch.sort(last_logits, descending=True, dim=-1)
+        cum = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+        remove = cum - F.softmax(sorted_logits, dim=-1) > top_p  # always keep the top token
+        sorted_logits = sorted_logits.masked_fill(remove, float("-inf"))
+        last_logits = torch.full_like(last_logits, float("-inf")).scatter(-1, sorted_idx, sorted_logits)
       probs = F.softmax(last_logits, dim=-1)
       next_token = torch.multinomial(probs, num_samples=1)
       

@@ -24,7 +24,7 @@ while True:
   prompt = f"Question: {question}\nAnswer:"
   print("GPT2:", end="", flush=True)
   try:
-    _, ppl = gpt2.generate(prompt, generate_hook=lambda t: print(t, end="", flush=True))
+    _, ppl = gpt2.generate(prompt, generate_hook=lambda t: print(t, end="", flush=True), temperature=0.5)
   except KeyboardInterrupt:
     print("\n[interrupted]\n")
     continue
