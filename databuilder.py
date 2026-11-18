@@ -1,4 +1,5 @@
 import os
+import re
 import torch
 from datasets import load_dataset
 from tqdm import tqdm
@@ -18,48 +19,122 @@ def get_tinystories():
     
     return storyTokens
 
-def get_alpacaQA():
-    if os.path.exists("alpaca.pt"):
-        qa_data = torch.load("alpaca.pt", weights_only=True)
-    else:
-        dataset = load_dataset("tatsu-lab/alpaca", split="train")
-        inputs, targets = [], []
+def wikitext_detokenize(s):
+    """Undo WikiText's tokenization artifacts (' , ' / ' @-@ ' / '( x )') so the model learns normal spacing."""
+    s = s.replace(" @-@ ", "-").replace(" @,@ ", ",").replace(" @.@ ", ".")
+    s = s.replace(" : ", ": ").replace(" ; ", "; ").replace(" . ", ". ").replace(" ! ", "! ").replace(" ? ", "? ")
+    s = s.replace(" , ", ", ")
+    s = re.sub(r" '(s|t|m|re|ve|ll|d)\b", r"'\1", s)  # WikiText writes "don 't", "it 's"
+    s = s.replace(" .\n", ".\n").replace(" ,\n", ",\n")
+    s = re.sub(r"\(\s*([^\)]*?)\s*\)", r"(\1)", s)
+    s = re.sub(r"\[\s*([^\]]*?)\s*\]", r"[\1]", s)
+    s = re.sub(r'"\s*([^"]*?)\s*"', r'"\1"', s)
+    s = s.replace("= = = =", "====").replace("= = =", "===").replace("= =", "==")
+    return s
 
-        for item in tqdm(dataset, desc="Tokenizing Alpaca"):
-            if item["input"]:
-                continue
+def get_wikitext():
+    """WikiText-103 (~120M GPT-2 tokens), one <eos> between articles, cached as int32."""
+    if os.path.exists("wikitext.pt"):
+        return torch.load("wikitext.pt", weights_only=True)
 
-            # 1. Format Question and Answer
-            q_text = f"Question: {item['instruction']}\nAnswer:"
-            a_text = f" {item['output']}"
+    dataset = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1", split="train")
 
-            q_ids = meta.tokenizer.encode(q_text)
-            a_ids = meta.tokenizer.encode(a_text) + [meta.tokenizer.eos_token_id]
+    # Lines like " = Title = " (single '=') start a new article; group lines into articles
+    articles, current = [], []
+    for line in tqdm(dataset["text"], desc="Grouping WikiText articles"):
+        s = line.strip()
+        if s.startswith("= ") and s.endswith(" =") and not s.startswith("= ="):
+            if "".join(current).strip():
+                articles.append(wikitext_detokenize("".join(current)))
+            current = []
+        current.append(line)
+    if current and "".join(current).strip():
+        articles.append(wikitext_detokenize("".join(current)))
 
-            full = q_ids + a_ids
-            if len(full) > meta.seq_len + 1:
-                continue  # skip examples longer than seq_len
+    chunks = []
+    batch = 1000
+    for i in tqdm(range(0, len(articles), batch), desc="Tokenizing WikiText"):
+        for ids in meta.tokenizer(articles[i:i + batch], verbose=False)["input_ids"]:
+            ids.append(meta.tokenizer.eos_token_id)
+            chunks.append(torch.tensor(ids, dtype=torch.int32))
 
-            # 2. Shift by 1 to create X and y
-            x = full[:-1]
-            y = full[1:]
+    tokens = torch.cat(chunks)
+    torch.save(tokens, "wikitext.pt")
+    return tokens
 
-            # 3. Mask the Question part in y with -100 (only grade the Answer!)
-            q_mask_len = len(q_ids) - 1
-            y[:q_mask_len] = [-100] * q_mask_len
+def get_pretrain_mix(tinystories_tokens=20_000_000):
+    """General English (WikiText-103) plus a slice of TinyStories for simple grammar.
+    Concatenation is enough: the DataLoader shuffles the windows."""
+    wiki = get_wikitext()
+    stories = get_tinystories()[:tinystories_tokens].to(torch.int32)
+    return torch.cat([wiki, stories])
 
-            # 4. Pad X with <eos> and y with -100 up to seq_len
-            pad_len = meta.seq_len - len(x)
-            x = x + [meta.tokenizer.eos_token_id] * pad_len
-            y = y + [-100] * pad_len
+def build_qa_examples(pairs, desc):
+    """Turn (question, answer) pairs into fixed-length X/y tensors with the question masked out."""
+    inputs, targets = [], []
 
-            inputs.append(x)
-            targets.append(y)
+    for question, answer in tqdm(pairs, desc=desc):
+        # 1. Format Question and Answer
+        q_text = f"Question: {question}\nAnswer:"
+        a_text = f" {answer}"
 
-        qa_data = {
+        q_ids = meta.tokenizer.encode(q_text)
+        a_ids = meta.tokenizer.encode(a_text) + [meta.tokenizer.eos_token_id]
+
+        full = q_ids + a_ids
+        if len(full) > meta.seq_len + 1:
+            continue  # skip examples longer than seq_len
+
+        # 2. Shift by 1 to create X and y
+        x = full[:-1]
+        y = full[1:]
+
+        # 3. Mask the Question part in y with -100 (only grade the Answer!)
+        q_mask_len = len(q_ids) - 1
+        y[:q_mask_len] = [-100] * q_mask_len
+
+        # 4. Pad X with <eos> and y with -100 up to seq_len
+        pad_len = meta.seq_len - len(x)
+        x = x + [meta.tokenizer.eos_token_id] * pad_len
+        y = y + [-100] * pad_len
+
+        inputs.append(x)
+        targets.append(y)
+
+    return {
         "inputs": torch.tensor(inputs, dtype=torch.long),
         "targets": torch.tensor(targets, dtype=torch.long),
-        }
-        torch.save(qa_data, "alpaca.pt")
-    
+    }
+
+def get_alpacaQA():
+    if os.path.exists("alpaca.pt"):
+        return torch.load("alpaca.pt", weights_only=True)
+
+    dataset = load_dataset("tatsu-lab/alpaca", split="train")
+    # skip examples with an extra "input" field: our prompt format has no place for it
+    pairs = [(item["instruction"], item["output"]) for item in dataset if not item["input"]]
+    qa_data = build_qa_examples(pairs, "Tokenizing Alpaca")
+    torch.save(qa_data, "alpaca.pt")
     return qa_data
+
+def get_dollyQA():
+    """Databricks Dolly-15k: human-written answers (Alpaca's were generated by GPT-3)."""
+    if os.path.exists("dolly.pt"):
+        return torch.load("dolly.pt", weights_only=True)
+
+    dataset = load_dataset("databricks/databricks-dolly-15k", split="train")
+    # like Alpaca, skip examples that need a context passage (reading comprehension, summarization)
+    pairs = [(item["instruction"].strip(), item["response"].strip())
+             for item in dataset if not item["context"].strip()]
+    qa_data = build_qa_examples(pairs, "Tokenizing Dolly")
+    torch.save(qa_data, "dolly.pt")
+    return qa_data
+
+def get_sft_mix():
+    """Alpaca + Dolly in one dataset for supervised fine-tuning (shuffled by the DataLoader)."""
+    alpaca, dolly = get_alpacaQA(), get_dollyQA()
+    print(f"SFT examples: {len(alpaca['inputs']):,} Alpaca + {len(dolly['inputs']):,} Dolly")
+    return {
+        "inputs":  torch.cat([alpaca["inputs"], dolly["inputs"]]),
+        "targets": torch.cat([alpaca["targets"], dolly["targets"]]),
+    }
